@@ -59,22 +59,12 @@ def send_feed_summary_to_feishu(feed_items: list, content_max_length: int = 500)
     for item in feed_items:
         title = item.get("title", "无标题")
         link = item.get("link", "")
-        content = item.get("content", "")
-        summary = item.get("summary", "")[:200] if item.get("summary") else ""
 
         if link:
             lines.append(f"### 🔗 [{title}]({link})")
         else:
             lines.append(f"### {title}")
 
-        if summary:
-            lines.append(f"> {summary}")
-        if content:
-            lines.append("")
-            if len(content) > content_max_length:
-                lines.append(content[:content_max_length] + "...")
-            else:
-                lines.append(content)
         lines.append("")
 
     text_content = "\n".join(lines)
