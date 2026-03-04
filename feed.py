@@ -1,72 +1,101 @@
-import feedparser
+import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import feedparser
 from dotenv import load_dotenv
-from helpers import time_difference
-from notion import get_feed_urls_from_notion, is_feed_item_exists_in_notion
+
+from notion import get_feed_urls_from_notion, get_existing_items_since
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
 RUN_FREQUENCY = int(os.getenv("RUN_FREQUENCY", "86400"))
+_MAX_FETCH_WORKERS = 5
 
 
-def _parse_struct_time_to_timestamp(st):
+def _parse_struct_time_to_timestamp(st) -> float:
     """Convert struct_time to timestamp."""
     if st:
         return time.mktime(st)
-    return 0
+    return 0.0
 
 
-def get_new_feed_items_from(feed_url):
+def _extract_content(item) -> str:
+    """Safely extract content from a feed item."""
+    content_list = item.get("content", [])
+    if content_list:
+        return content_list[0].get("value", "") or item.get("summary", "")
+    return item.get("summary", "")
+
+
+def _get_new_feed_items_from(
+    feed_url: str,
+    existing_titles: set[str],
+    existing_links: set[str],
+) -> list[dict]:
     """Fetch and filter new items from a single RSS feed."""
     try:
         rss = feedparser.parse(feed_url)
     except Exception as e:
-        print(f"Error parsing feed {feed_url}: {e}")
+        logger.error("Error parsing feed %s: %s", feed_url, e)
         return []
 
     current_time_struct = rss.get("updated_parsed") or rss.get("published_parsed")
-    current_time = _parse_struct_time_to_timestamp(current_time_struct) if current_time_struct else time.time()
+    current_time = (
+        _parse_struct_time_to_timestamp(current_time_struct)
+        if current_time_struct
+        else time.time()
+    )
 
-    new_items = []
+    new_items: list[dict] = []
     for item in rss.entries:
         pub_date = item.get("published_parsed") or item.get("updated_parsed")
-        if pub_date:
-            blog_published_time = _parse_struct_time_to_timestamp(pub_date)
-        else:
+        if not pub_date:
             continue
 
-        diff = time_difference(current_time, blog_published_time)
-        if diff["diffInSeconds"] < RUN_FREQUENCY:
-            title = item.get("title", "")
-            link = item.get("link", "")
+        blog_published_time = _parse_struct_time_to_timestamp(pub_date)
+        if (current_time - blog_published_time) >= RUN_FREQUENCY:
+            continue
 
-            if is_feed_item_exists_in_notion(title, link):
-                continue
+        title = item.get("title", "")
+        link = item.get("link", "")
 
-            new_items.append({
-                "title": title,
-                "link": link,
-                "content": item.get("content", [{}])[0].get("value", item.get("summary", "")),
-                "published_parsed": pub_date
-            })
+        if title in existing_titles or link in existing_links:
+            continue
+
+        new_items.append({
+            "title": title,
+            "link": link,
+            "content": _extract_content(item),
+            "published_parsed": pub_date,
+        })
 
     return new_items
 
 
-def get_new_feed_items():
-    """Fetch new items from all enabled RSS feeds."""
-    all_new_feed_items = []
-
+def get_new_feed_items() -> list[dict]:
+    """Fetch new items from all enabled RSS feeds concurrently."""
     feeds = get_feed_urls_from_notion()
+    existing_titles, existing_links = get_existing_items_since(days=5)
 
-    for feed in feeds:
-        feed_url = feed.get("feedUrl")
-        if feed_url:
-            feed_items = get_new_feed_items_from(feed_url)
-            all_new_feed_items.extend(feed_items)
+    feed_urls = [f["feedUrl"] for f in feeds if f.get("feedUrl")]
+    all_new_feed_items: list[dict] = []
 
-    # Sort feed items by published date
+    with ThreadPoolExecutor(max_workers=_MAX_FETCH_WORKERS) as executor:
+        futures = {
+            executor.submit(
+                _get_new_feed_items_from, url, existing_titles, existing_links
+            ): url
+            for url in feed_urls
+        }
+        for future in as_completed(futures):
+            try:
+                all_new_feed_items.extend(future.result())
+            except Exception as e:
+                logger.error("Error fetching feed %s: %s", futures[future], e)
+
     all_new_feed_items.sort(
         key=lambda x: _parse_struct_time_to_timestamp(x.get("published_parsed"))
     )

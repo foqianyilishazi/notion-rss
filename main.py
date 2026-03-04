@@ -1,26 +1,41 @@
-import asyncio
+import logging
+
 from feed import get_new_feed_items
-from notion import add_feed_item_to_notion
+from notion import add_feed_item_to_notion, delete_old_unread_feed_items_from_notion
 from parser import html_to_notion_blocks
 from feishu import send_feed_summary_to_feishu
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
-async def main():
+
+def main():
     """Main entry point for the Notion Feeder application."""
     feed_items = get_new_feed_items()
-    print(feed_items)
+    logger.info("Fetched %d new feed items", len(feed_items))
 
     if feed_items:
         send_feed_summary_to_feishu(feed_items)
 
+    success, failed = 0, 0
     for item in feed_items:
         notion_item = {
             "title": item.get("title", ""),
             "link": item.get("link", ""),
             "content": html_to_notion_blocks(item.get("content", ""))
         }
-        add_feed_item_to_notion(notion_item)
+        if add_feed_item_to_notion(notion_item):
+            success += 1
+        else:
+            failed += 1
+
+    logger.info("Notion write complete: %d success, %d failed", success, failed)
+
+    delete_old_unread_feed_items_from_notion()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

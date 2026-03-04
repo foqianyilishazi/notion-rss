@@ -1,125 +1,82 @@
+import logging
+import re
+
 from markdownify import markdownify as turndown
 
+logger = logging.getLogger(__name__)
+NOTION_MAX_TEXT_LENGTH = 2000
+_LINK_RE = re.compile(r'\[(.+?)]\((.+?)\)')
+_NUMBERED_LIST_RE = re.compile(r'^\d+\.\s')
 
-def html_to_markdown(html_content):
+
+def html_to_markdown(html_content: str) -> str:
     """Convert HTML content to Markdown."""
     try:
         return turndown(html_content)
     except Exception as e:
-        print(f"Error converting HTML to Markdown: {e}")
+        logger.error("Error converting HTML to Markdown: %s", e)
         return ""
 
 
-def markdown_to_notion_blocks(markdown_content):
-    """Convert Markdown content to Notion blocks."""
-    blocks = []
-    lines = markdown_content.split("\n")
+def _truncate(text: str, max_len: int = NOTION_MAX_TEXT_LENGTH) -> str:
+    """Truncate text to fit Notion's per-block character limit."""
+    return text[:max_len] if len(text) > max_len else text
 
-    for line in lines:
+
+def _make_rich_text(content: str, *, link: str | None = None, **annotations) -> list[dict]:
+    text_obj: dict = {"content": _truncate(content)}
+    if link:
+        text_obj["link"] = {"url": link}
+    entry: dict = {"type": "text", "text": text_obj}
+    if annotations:
+        entry["annotations"] = annotations
+    return [entry]
+
+
+def _make_block(block_type: str, rich_text: list[dict]) -> dict:
+    return {"type": block_type, block_type: {"rich_text": rich_text}}
+
+
+def markdown_to_notion_blocks(markdown_content: str) -> list[dict]:
+    """Convert Markdown content to Notion blocks."""
+    blocks: list[dict] = []
+
+    for line in markdown_content.split("\n"):
         line = line.strip()
         if not line:
             continue
 
-        if line.startswith("# "):
-            blocks.append({
-                "type": "heading_1",
-                "heading_1": {
-                    "rich_text": [{"type": "text", "text": {"content": line[2:]}}]
-                }
-            })
+        if line.startswith("### "):
+            blocks.append(_make_block("heading_3", _make_rich_text(line[4:])))
         elif line.startswith("## "):
-            blocks.append({
-                "type": "heading_2",
-                "heading_2": {
-                    "rich_text": [{"type": "text", "text": {"content": line[3:]}}]
-                }
-            })
-        elif line.startswith("### "):
-            blocks.append({
-                "type": "heading_3",
-                "heading_3": {
-                    "rich_text": [{"type": "text", "text": {"content": line[4:]}}]
-                }
-            })
-        elif line.startswith("- "):
-            blocks.append({
-                "type": "bulleted_list_item",
-                "bulleted_list_item": {
-                    "rich_text": [{"type": "text", "text": {"content": line[2:]}}]
-                }
-            })
-        elif line.startswith("1. "):
-            blocks.append({
-                "type": "numbered_list_item",
-                "numbered_list_item": {
-                    "rich_text": [{"type": "text", "text": {"content": line[3:]}}]
-                }
-            })
-        elif line.startswith("**") and line.endswith("**"):
-            blocks.append({
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{
-                        "type": "text",
-                        "text": {"content": line[2:-2]},
-                        "annotations": {"bold": True}
-                    }]
-                }
-            })
-        elif line.startswith("*") and line.endswith("*"):
-            blocks.append({
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{
-                        "type": "text",
-                        "text": {"content": line[1:-1]},
-                        "annotations": {"italic": True}
-                    }]
-                }
-            })
-        elif line.startswith("`") and line.endswith("`"):
-            blocks.append({
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{
-                        "type": "text",
-                        "text": {"content": line[1:-1]},
-                        "annotations": {"code": True}
-                    }]
-                }
-            })
-        elif line.startswith("[") and "](" in line:
-            # Link: [text](url)
-            text_part = line[1:line.index("](")]
-            url_part = line[line.index("](")+2:line.index(")")]
-            blocks.append({
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{
-                        "type": "text",
-                        "text": {"content": text_part, "link": {"url": url_part}}
-                    }]
-                }
-            })
+            blocks.append(_make_block("heading_2", _make_rich_text(line[3:])))
+        elif line.startswith("# "):
+            blocks.append(_make_block("heading_1", _make_rich_text(line[2:])))
+        elif line.startswith("- ") or line.startswith("* "):
+            blocks.append(_make_block("bulleted_list_item", _make_rich_text(line[2:])))
+        elif _NUMBERED_LIST_RE.match(line):
+            text = _NUMBERED_LIST_RE.sub("", line, count=1)
+            blocks.append(_make_block("numbered_list_item", _make_rich_text(text)))
+        elif line.startswith("**") and line.endswith("**") and len(line) > 4:
+            blocks.append(_make_block("paragraph", _make_rich_text(line[2:-2], bold=True)))
+        elif line.startswith("*") and line.endswith("*") and len(line) > 2:
+            blocks.append(_make_block("paragraph", _make_rich_text(line[1:-1], italic=True)))
+        elif line.startswith("`") and line.endswith("`") and len(line) > 2:
+            blocks.append(_make_block("paragraph", _make_rich_text(line[1:-1], code=True)))
         elif line.startswith("http://") or line.startswith("https://"):
-            blocks.append({
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": line, "link": {"url": line}}}]
-                }
-            })
+            blocks.append(_make_block("paragraph", _make_rich_text(line, link=line)))
         else:
-            blocks.append({
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": line}}]
-                }
-            })
+            link_match = _LINK_RE.match(line)
+            if link_match:
+                text_part, url_part = link_match.groups()
+                blocks.append(_make_block("paragraph", _make_rich_text(text_part, link=url_part)))
+            else:
+                blocks.append(_make_block("paragraph", _make_rich_text(line)))
 
     return blocks
 
 
-def html_to_notion_blocks(html_content):
+def html_to_notion_blocks(html_content: str) -> list[dict]:
     """Convert HTML content to Notion blocks."""
-    markdown_json = html_to_markdown(html_content)
-    return markdown_to_notion_blocks(markdown_json)
+    markdown = html_to_markdown(html_content)
+    return markdown_to_notion_blocks(markdown)

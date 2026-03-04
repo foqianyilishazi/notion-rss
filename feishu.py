@@ -1,6 +1,10 @@
+import logging
 import os
-import requests
 from datetime import datetime
+
+import requests
+
+logger = logging.getLogger(__name__)
 
 
 def send_to_feishu(date: str, text: str) -> bool:
@@ -16,7 +20,7 @@ def send_to_feishu(date: str, text: str) -> bool:
     """
     webhook_url = os.getenv("FEISHU_WEBHOOK_URL")
     if not webhook_url:
-        print("Error: FEISHU_WEBHOOK_URL not set in environment")
+        logger.error("FEISHU_WEBHOOK_URL not set in environment")
         return False
 
     payload = {
@@ -30,26 +34,25 @@ def send_to_feishu(date: str, text: str) -> bool:
     try:
         response = requests.post(webhook_url, json=payload, timeout=30)
         response.raise_for_status()
-        print(f"Feishu message sent successfully at {datetime.now().isoformat()}")
+        logger.info("Feishu message sent successfully at %s", datetime.now().isoformat())
         return True
     except requests.exceptions.RequestException as e:
-        print(f"Failed to send Feishu message: {e}")
+        logger.error("Failed to send Feishu message: %s", e)
         return False
 
 
-def send_feed_summary_to_feishu(feed_items: list, content_max_length: int = 500) -> bool:
+def send_feed_summary_to_feishu(feed_items: list) -> bool:
     """
     Send all feed items to Feishu in a single message.
 
     Args:
         feed_items: List of feed item dictionaries with 'title', 'link', 'date', etc.
-        content_max_length: Maximum length for content field (default: 500)
 
     Returns:
         bool: True if successful, False otherwise
     """
     if not feed_items:
-        print("No feed items to send")
+        logger.info("No feed items to send")
         return True
 
     today = datetime.now().strftime("%Y-%m-%d")
