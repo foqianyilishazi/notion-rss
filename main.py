@@ -4,6 +4,7 @@ from feed import get_new_feed_items
 from notion import add_feed_item_to_notion, delete_old_unread_feed_items_from_notion
 from parser import html_to_notion_blocks
 from feishu import send_feed_summary_to_feishu
+from feed_sync import sync_opml_to_notion
 
 logging.basicConfig(
     level=logging.INFO,
@@ -12,8 +13,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def generate_summary(html_content: str) -> str:
+    text = html_content.replace("\n", " ").strip()
+    return text[:180]
+
+
 def main():
-    """Main entry point for the Notion Feeder application."""
+    sync_opml_to_notion("subscriptions.opml")
+
     feed_items = get_new_feed_items()
     logger.info("Fetched %d new feed items", len(feed_items))
 
@@ -25,15 +32,22 @@ def main():
         notion_item = {
             "title": item.get("title", ""),
             "link": item.get("link", ""),
-            "content": html_to_notion_blocks(item.get("content", ""))
+            "guid": item.get("guid", ""),
+            "source": item.get("source", ""),
+            "category": item.get("category", ""),
+            "subcategory": item.get("subcategory", ""),
+            "published_at": item.get("published_at", ""),
+            "summary": generate_summary(item.get("content", "")),
+            "cover": item.get("cover", ""),
+            "content": html_to_notion_blocks(item.get("content", "")),
         }
+
         if add_feed_item_to_notion(notion_item):
             success += 1
         else:
             failed += 1
 
     logger.info("Notion write complete: %d success, %d failed", success, failed)
-
     delete_old_unread_feed_items_from_notion()
 
 
